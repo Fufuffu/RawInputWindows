@@ -43,6 +43,7 @@ Player :: struct {
 	anim_frame:   int,
 	anim_timer:   f32,
 	pos:          Vec2,
+	pos2:         Vec2,
 	flip_x:       bool,
 }
 
@@ -148,6 +149,8 @@ main :: proc() {
 		free_all(context.temp_allocator)
 	}
 
+	// Unload resources and libs
+	rm.destroy_raw_mouse()
 	delete_texture(player.anim_texture)
 }
 
@@ -191,7 +194,23 @@ tick :: proc(dt: f32) {
 		}
 	}
 
-	player.pos += movement * 60 * dt
+	// player.pos += movement * 60 * dt
+
+	// Get mouse position
+	mouse0, ok0 := rm.get_raw_mouse(0)
+
+	if ok0 {
+		player.pos.x = f32(mouse0.x)
+		player.pos.y = f32(mouse0.y)
+	}
+
+	mouse1, ok1 := rm.get_raw_mouse(1)
+
+	if ok1 {
+		player.pos2.x = f32(mouse1.x)
+		player.pos2.y = f32(mouse1.y)
+
+	}
 }
 
 // Runs Windows message pump. The DispatchMessageW call will run `wnd_proc` if
@@ -231,6 +250,8 @@ draw :: proc(hwnd: win.HWND) {
 
 		draw_texture(player.anim_texture, anim_frame_rect, player.pos, player.flip_x)
 	}
+
+	draw_rect({player.pos2.x, player.pos2.y, 8, 8})
 
 	// Begin painting of window. This gives a hdc: A device context handle,
 	// which is a handle we can use to instruct the Windows API to draw stuff
@@ -308,12 +329,22 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		return 0
 
 	case win.WM_INPUT:
-		rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)))
+		rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)), 0, SCREEN_WIDTH - 8, 0, SCREEN_HEIGHT - 16)
 		return 0
 
 	case win.WM_INPUT_DEVICE_CHANGE:
-		fmt.println("-------- TODO: Handle this, new device was connected or disconnected")
-		// TODO: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-input-device-change
+		GIDC_ARRIVAL :: 1
+		GIDC_REMOVAL :: 2
+
+		switch wparam {
+		case GIDC_ARRIVAL:
+			fmt.println("added dev:", lparam)
+			rm.add_raw_mouse(win.HANDLE(uintptr(lparam)))
+		case GIDC_REMOVAL:
+			fmt.println("removed dev:", lparam)
+			rm.remove_raw_mouse(win.HANDLE(uintptr(lparam)))
+		}
+
 		return 0
 
 	case win.WM_KEYDOWN:

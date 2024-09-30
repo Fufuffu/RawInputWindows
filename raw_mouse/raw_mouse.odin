@@ -1,13 +1,13 @@
 package raw_mouse
 
 import "core:fmt"
+import "core:math"
 import "core:mem"
 import "core:strings"
 import win "core:sys/windows"
 
 MAX_MOUSE_BUTTONS :: 3
 
-// TODO: Refactor / "private" vars 
 mouse_list: [dynamic]Raw_Mouse
 
 Raw_Mouse :: struct {
@@ -18,12 +18,52 @@ Raw_Mouse :: struct {
 	buttons_pressed: [MAX_MOUSE_BUTTONS]bool,
 }
 
-init_raw_mouse :: proc(hwnd: win.HWND, allocator := context.allocator) -> bool {
-	// Get all raw input devices
-	devices := _get_raw_devices(allocator) or_return
-
+// Inits the library, if report_device_changes is false, all the devices must be manually added using 
+// get_valid_raw_mice_handles and add_raw_mouse. Otherwise, the message should be handled by calling add or remove raw mouse.
+init_raw_mouse :: proc(hwnd: win.HWND, report_device_changes: bool = true, allocator := context.allocator) -> bool {
 	// Init mouse list memory (4 mice by default)
 	mouse_list = make([dynamic]Raw_Mouse, 0, 4, allocator = allocator)
+
+	dwFlags: u32
+	if report_device_changes do dwFlags = win.RIDEV_DEVNOTIFY
+
+	raw_input_device := win.RAWINPUTDEVICE {
+		usUsagePage = win.HID_USAGE_PAGE_GENERIC,
+		usUsage     = win.HID_USAGE_GENERIC_MOUSE,
+		dwFlags     = dwFlags,
+		hwndTarget  = hwnd,
+	}
+
+	if !win.RegisterRawInputDevices(&raw_input_device, 1, size_of(win.RAWINPUTDEVICELIST)) {
+		fmt.eprintln("Could not register the current hwnd as a raw device.")
+		return false
+	}
+
+	return true
+}
+
+// Returns the handles of all mice currently connected to the system for later use with add_raw_mouse (excludes RDP mouse if detected)
+get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: []win.HANDLE, ok: bool) {
+	num_devices: u32
+	if win.GetRawInputDeviceList(nil, &num_devices, size_of(win.RAWINPUTDEVICELIST)) != 0 {
+		fmt.eprintln("Could not get raw input device count")
+		return []win.HANDLE{}, false
+	}
+
+	if num_devices <= 0 {
+		fmt.println("No mouses, returning gracefully")
+		return []win.HANDLE{}, true
+	}
+
+	devices := make([]win.RAWINPUTDEVICELIST, num_devices, allocator)
+	// TODO: Check if error case is being handled correctly on all systems
+	// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getrawinputdevicelist#return-value
+	if win.GetRawInputDeviceList(raw_data(devices), &num_devices, size_of(win.RAWINPUTDEVICELIST)) == 4294967295 {
+		fmt.eprintln("Could not get raw input device list")
+		return []win.HANDLE{}, false
+	}
+
+	valid_handles := make([dynamic]win.HANDLE, 0, len(devices))
 
 	// Get all mouses
 	RDP_String := "\\??\\Root#RDP_MOU#0000#"
@@ -45,74 +85,15 @@ init_raw_mouse :: proc(hwnd: win.HWND, allocator := context.allocator) -> bool {
 
 		// Skip RDP mouse (Windows terminal / remote desktop)
 		if !strings.contains(device_name, RDP_String) {
-			if win.GetRawInputDeviceInfoW(device.hDevice, win.RIDI_DEVICEINFO, nil, &size) != 0 {
-				fmt.eprintln("Could not get size of Device Info struct for device:", device)
-				continue
-			}
-
-			mouse_info := win.RID_DEVICE_INFO {
-				cbSize = u32(size_of(win.RID_DEVICE_INFO)),
-			}
-
-			if win.GetRawInputDeviceInfoW(device.hDevice, win.RIDI_DEVICEINFO, &mouse_info, &size) == 4294967295 {
-				fmt.eprintln("Could not get information for device:", device)
-				continue
-			}
-
-			mouse := Raw_Mouse {
-				handle = device.hDevice,
-			}
-			append(&mouse_list, mouse)
+			append(&valid_handles, device.hDevice)
 		}
 	}
 
-	// Register the app so it receives raw input
-	return _register_raw_mouse(hwnd)
-}
-
-@(private)
-_get_raw_devices :: proc(allocator := context.allocator) -> (devices: []win.RAWINPUTDEVICELIST, ok: bool) {
-	num_devices: u32
-	if win.GetRawInputDeviceList(nil, &num_devices, size_of(win.RAWINPUTDEVICELIST)) != 0 {
-		fmt.eprintln("Could not get raw input device count")
-		return []win.RAWINPUTDEVICELIST{}, false
-	}
-
-	if num_devices <= 0 {
-		fmt.println("No mouses, returning gracefully")
-		return []win.RAWINPUTDEVICELIST{}, true
-	}
-
-	returned_devices := make([]win.RAWINPUTDEVICELIST, num_devices, allocator)
-	// TODO: Check if error case is being handled correctly on all systems
-	// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getrawinputdevicelist#return-value
-	if win.GetRawInputDeviceList(raw_data(returned_devices), &num_devices, size_of(win.RAWINPUTDEVICELIST)) == 4294967295 {
-		fmt.eprintln("Could not get raw input device list")
-		return []win.RAWINPUTDEVICELIST{}, false
-	}
-
-	return returned_devices, true
-}
-
-@(private)
-_register_raw_mouse :: proc(hwnd: win.HWND) -> bool {
-	raw_input_device := win.RAWINPUTDEVICE {
-		usUsagePage = win.HID_USAGE_PAGE_GENERIC,
-		usUsage     = win.HID_USAGE_GENERIC_MOUSE,
-		dwFlags     = win.RIDEV_DEVNOTIFY,
-		hwndTarget  = hwnd,
-	}
-
-	if !win.RegisterRawInputDevices(&raw_input_device, 1, size_of(win.RAWINPUTDEVICELIST)) {
-		fmt.eprintln("Could not register the current hwnd as a raw device.")
-		return false
-	}
-
-	return true
+	return valid_handles[:], true
 }
 
 // https://ph3at.github.io/posts/Windows-Input/
-update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> bool {
+update_raw_mouse :: proc(dHandle: win.HRAWINPUT, minX: i32, maxX: i32, minY: i32, maxY: i32) -> bool {
 	size: u32
 	if win.GetRawInputData(dHandle, win.RID_INPUT, nil, &size, size_of(win.RAWINPUTHEADER)) != 0 {
 		fmt.eprintln("Could not raw input data header size for device:", dHandle)
@@ -128,8 +109,8 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> bool {
 	for &mouse in mouse_list {
 		if mouse.handle == raw_input.header.hDevice {
 			// Position data
-			mouse.x += raw_input.data.mouse.lLastX
-			mouse.y += raw_input.data.mouse.lLastY
+			mouse.x = math.clamp(raw_input.data.mouse.lLastX + mouse.x, minX, maxX)
+			mouse.y = math.clamp(raw_input.data.mouse.lLastY + mouse.y, minY, maxY)
 
 			// Mouse buttons
 			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_DOWN) > 0 do mouse.buttons_pressed[0] = true
@@ -148,10 +129,59 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> bool {
 					mouse.z -= 1
 				}
 			}
-
-			fmt.println(mouse)
 		}
 	}
 
 	return true
+}
+
+add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
+	size: u32
+	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, nil, &size) != 0 {
+		fmt.eprintln("Could not get size of Device Info struct for device:", hDevice)
+		return false
+	}
+
+	mouse_info := win.RID_DEVICE_INFO {
+		cbSize = u32(size_of(win.RID_DEVICE_INFO)),
+	}
+
+	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, &mouse_info, &size) == 4294967295 {
+		fmt.eprintln("Could not get information for device:", hDevice)
+		return false
+	}
+
+	mouse := Raw_Mouse {
+		handle = hDevice,
+	}
+	append(&mouse_list, mouse)
+
+	return true
+}
+
+// TODO: Deal with how mouses are exposed, needs generational handles
+remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
+	pos: int = -1
+	for mouse, i in mouse_list {
+		if mouse.handle == dHandle {
+			pos = i
+			break
+		}
+	}
+
+	if pos == -1 do return true
+
+	unordered_remove(&mouse_list, pos)
+
+	return true
+}
+
+get_raw_mouse :: proc(mouse_id: int) -> (mouse: Raw_Mouse, ok: bool) {
+	if mouse_id >= len(mouse_list) || mouse_id < 0 do return Raw_Mouse{}, false
+
+	return mouse_list[mouse_id], true
+}
+
+destroy_raw_mouse :: proc() {
+	delete(mouse_list)
 }
