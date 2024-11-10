@@ -32,26 +32,28 @@ Texture :: struct {
 
 Key :: enum {
 	None,
-	Left,
-	Right,
-	Up,
-	Down,
+	R,
 }
 
-Player :: struct {
-	anim_texture: Texture,
-	anim_frame:   int,
-	anim_timer:   f32,
-	pos:          Vec2,
-	pos2:         Vec2,
-	flip_x:       bool,
+Game :: struct {
+	texture_atlas: Texture,
+	hand_one_pos:  Vec2,
+	hand_two_pos:  Vec2,
+	ball_pos:      Vec2,
+	ball_vel:      Vec2,
 }
+
+// Game constants
+GRAVITY :: Vec2{0, 10}
+HAND_BBOX :: Vec2{16, 16}
+BALL_BBOX :: Vec2{16, 16}
 
 // The size of the bitmap we will use for drawing. Will be scaled up to window.
 SCREEN_WIDTH :: 320
 SCREEN_HEIGHT :: 180
+MOUSE_SENS_MULT: f32 : 4
 
-player: Player
+game: Game
 
 // State of held keys
 key_down: [Key]bool
@@ -118,17 +120,19 @@ main :: proc() {
 		panic("Could not init raw mouse lib")
 	}
 
-	// Load texture for player, it's a 2 frame animation.
-	player_anim_texture, player_anim_texture_ok := load_texture("walk_animation.png")
+	// Load texture atlas
+	texture_atlas, texture_atlas_ok := load_texture("texture_atlas.png")
 
-	if !player_anim_texture_ok {
-		log.error("Failed to walk_animation.png")
+	if !texture_atlas_ok {
+		log.error("Failed to load texture_atlas.png")
 		return
 	}
 
-	player = {
-		pos          = {40, 40},
-		anim_texture = player_anim_texture,
+	game = {
+		hand_one_pos  = {SCREEN_WIDTH / 3, SCREEN_HEIGHT / 3 * 2},
+		hand_two_pos  = {SCREEN_WIDTH / 3 * 2, SCREEN_HEIGHT / 3 * 2},
+		ball_pos      = {SCREEN_WIDTH / 2, 16},
+		texture_atlas = texture_atlas,
 	}
 
 	// Use built in Odin high resolution timer for tracking frame time.
@@ -151,66 +155,68 @@ main :: proc() {
 
 	// Unload resources and libs
 	rm.destroy_raw_mouse()
-	delete_texture(player.anim_texture)
+	delete_texture(game.texture_atlas)
 }
 
 tick :: proc(dt: f32) {
-	movement: Vec2
-
-	if key_down[.Left] {
-		movement.x -= 1
-		player.flip_x = true
+	if key_down[.R] {
+		game.ball_vel = {}
+		game.ball_pos = {SCREEN_WIDTH / 2, 16}
 	}
 
-	if key_down[.Right] {
-		movement.x += 1
-		player.flip_x = false
-	}
-
-	if key_down[.Up] {
-		movement.y -= 1
-	}
-
-	if key_down[.Down] {
-		movement.y += 1
-	}
-
-	// Normalize input so you don't walk faster when walking diagonally.
-	movement = linalg.normalize0(movement)
-
-	if movement.x != 0 {
-		// If player moves, then update animation. It's just a timer that hops
-		// between two frames.
-
-		player.anim_timer -= dt
-		if player.anim_timer <= 0 {
-			player.anim_frame += 1
-
-			if player.anim_frame > 1 {
-				player.anim_frame = 0
-			}
-
-			player.anim_timer = 0.1
-		}
-	}
-
-	// player.pos += movement * 60 * dt
+	// Update ball "physics"
+	game.ball_vel += GRAVITY * dt
+	game.ball_pos += game.ball_vel * dt
 
 	// Get mouse position
 	mouse0, ok0 := rm.get_raw_mouse(0)
-
 	if ok0 {
-		player.pos.x = f32(mouse0.x)
-		player.pos.y = f32(mouse0.y)
+		game.hand_one_pos.x = f32(mouse0.x)
+		game.hand_one_pos.y = f32(mouse0.y)
 	}
 
 	mouse1, ok1 := rm.get_raw_mouse(1)
-
 	if ok1 {
-		player.pos2.x = f32(mouse1.x)
-		player.pos2.y = f32(mouse1.y)
-
+		game.hand_two_pos.x = f32(mouse1.x)
+		game.hand_two_pos.y = f32(mouse1.y)
 	}
+
+	hand_one_rect := Rect {
+		x = f32(game.hand_one_pos.x),
+		y = f32(game.hand_one_pos.y),
+		w = HAND_BBOX.x,
+		h = HAND_BBOX.y,
+	}
+
+	hand_two_rect := Rect {
+		x = f32(game.hand_two_pos.x),
+		y = f32(game.hand_two_pos.y),
+		w = HAND_BBOX.x,
+		h = HAND_BBOX.y,
+	}
+
+	ball_rect := Rect {
+		x = f32(game.ball_pos.x),
+		y = f32(game.ball_pos.y),
+		w = BALL_BBOX.x,
+		h = BALL_BBOX.y,
+	}
+
+	if rects_intersect(ball_rect, hand_one_rect) {
+		fmt.println("hand1 intersect")
+	}
+
+	if rects_intersect(ball_rect, hand_two_rect) {
+		fmt.println("hand2 intersects")
+	}
+}
+
+calculate_hand_rect :: proc(x, y: i32) -> Rect {
+	return Rect{x = f32(x), y = f32(y), w = HAND_BBOX.x, h = HAND_BBOX.y}
+}
+
+rects_intersect :: proc(a: Rect, b: Rect) -> bool {
+	return a.x <= (b.x + b.w) && (a.x + a.w) >= b.x && (a.y + a.h) >= b.y && a.y <= (b.y + b.h)
 }
 
 // Runs Windows message pump. The DispatchMessageW call will run `wnd_proc` if
@@ -236,22 +242,30 @@ draw :: proc(hwnd: win.HWND) {
 	// This clears the screen.
 	slice.zero(screen_buffer)
 
-	draw_rect({20, 56, 200, 8})
-
-	// Draw player
+	// Draw hands
 	{
-		// The rectangle in the animation image to use.
-		anim_frame_rect := Rect {
-			x = f32(8 * player.anim_frame),
+		hand_rect := Rect {
+			x = 16,
 			y = 0,
-			w = 8,
-			h = 16,
+			w = HAND_BBOX.x,
+			h = HAND_BBOX.y,
 		}
 
-		draw_texture(player.anim_texture, anim_frame_rect, player.pos, player.flip_x)
+		draw_texture(game.texture_atlas, hand_rect, game.hand_one_pos, false)
+		draw_texture(game.texture_atlas, hand_rect, game.hand_two_pos, true)
 	}
 
-	draw_rect({player.pos2.x, player.pos2.y, 8, 8})
+	// Draw the ball
+	{
+		ball_rect := Rect {
+			x = 0,
+			y = 0,
+			w = BALL_BBOX.x,
+			h = BALL_BBOX.y,
+		}
+
+		draw_texture(game.texture_atlas, ball_rect, game.ball_pos, false)
+	}
 
 	// Begin painting of window. This gives a hdc: A device context handle,
 	// which is a handle we can use to instruct the Windows API to draw stuff
@@ -320,6 +334,16 @@ draw_texture :: proc(t: Texture, src: Rect, pos: Vec2, flip_x: bool) {
 	}
 }
 
+mouse_pos_update :: proc(mouse: rm.Raw_Mouse, deltaX: i32, deltaY: i32) -> (x: i32, y: i32) {
+	scaled_delta_x := math.ceil(f32(abs(deltaX)) / MOUSE_SENS_MULT) * math.sign(f32(deltaX))
+	scaled_delta_y := math.ceil(f32(abs(deltaY)) / MOUSE_SENS_MULT) * math.sign(f32(deltaY))
+
+	x = math.clamp(i32(scaled_delta_x) + mouse.x, 0, SCREEN_WIDTH - 16)
+	y = math.clamp(i32(scaled_delta_y) + mouse.y, 0, SCREEN_HEIGHT - 16)
+
+	return x, y
+}
+
 win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
 	context = runtime.default_context()
 	switch (msg) {
@@ -329,7 +353,7 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		return 0
 
 	case win.WM_INPUT:
-		rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)), 0, SCREEN_WIDTH - 8, 0, SCREEN_HEIGHT - 16)
+		rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)), mouse_pos_update)
 		return 0
 
 	case win.WM_INPUT_DEVICE_CHANGE:
@@ -349,33 +373,15 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 
 	case win.WM_KEYDOWN:
 		switch wparam {
-		case win.VK_LEFT:
-			key_down[.Left] = true
-
-		case win.VK_RIGHT:
-			key_down[.Right] = true
-
-		case win.VK_UP:
-			key_down[.Up] = true
-
-		case win.VK_DOWN:
-			key_down[.Down] = true
+		case win.VK_R:
+			key_down[.R] = true
 		}
 		return 0
 
 	case win.WM_KEYUP:
 		switch wparam {
-		case win.VK_LEFT:
-			key_down[.Left] = false
-
-		case win.VK_RIGHT:
-			key_down[.Right] = false
-
-		case win.VK_UP:
-			key_down[.Up] = false
-
-		case win.VK_DOWN:
-			key_down[.Down] = false
+		case win.VK_R:
+			key_down[.R] = false
 		}
 		return 0
 

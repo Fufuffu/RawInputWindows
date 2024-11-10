@@ -92,8 +92,10 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 	return valid_handles[:], true
 }
 
+update_mouse_pos_proc :: proc(mouse: Raw_Mouse, deltaX: i32, deltaY: i32) -> (x: i32, y: i32)
+
 // https://ph3at.github.io/posts/Windows-Input/
-update_raw_mouse :: proc(dHandle: win.HRAWINPUT, minX: i32, maxX: i32, minY: i32, maxY: i32) -> bool {
+update_raw_mouse :: proc(dHandle: win.HRAWINPUT, update_mouse_pos: update_mouse_pos_proc) -> bool {
 	size: u32
 	if win.GetRawInputData(dHandle, win.RID_INPUT, nil, &size, size_of(win.RAWINPUTHEADER)) != 0 {
 		fmt.eprintln("Could not raw input data header size for device:", dHandle)
@@ -109,8 +111,9 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT, minX: i32, maxX: i32, minY: i32
 	for &mouse in mouse_list {
 		if mouse.handle == raw_input.header.hDevice {
 			// Position data
-			mouse.x = math.clamp(raw_input.data.mouse.lLastX + mouse.x, minX, maxX)
-			mouse.y = math.clamp(raw_input.data.mouse.lLastY + mouse.y, minY, maxY)
+			x, y := update_mouse_pos(mouse, raw_input.data.mouse.lLastX, raw_input.data.mouse.lLastY)
+			mouse.x = x
+			mouse.y = y
 
 			// Mouse buttons
 			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_DOWN) > 0 do mouse.buttons_pressed[0] = true
