@@ -36,12 +36,19 @@ Key :: enum {
 	ESC,
 }
 
+Ball_State :: struct {
+	pos:           Vec2,
+	vel:           Vec2,
+	follow_target: ^Vec2,
+	grabbed:       bool,
+	last_grab_pos: Vec2,
+}
+
 Game :: struct {
 	texture_atlas: Texture,
 	hand_one_pos:  Vec2,
 	hand_two_pos:  Vec2,
-	ball_pos:      Vec2,
-	ball_vel:      Vec2,
+	ball:          Ball_State,
 }
 
 Mouse_Button :: enum u8 {
@@ -66,7 +73,7 @@ App_State :: struct {
 }
 
 // Game constants
-GRAVITY :: Vec2{0, 10}
+GRAVITY :: Vec2{0, 25}
 HAND_BBOX :: Vec2{16, 16}
 BALL_BBOX :: Vec2{16, 16}
 
@@ -156,9 +163,9 @@ main :: proc() {
 	}
 
 	game = {
-		hand_one_pos  = {SCREEN_WIDTH / 3, SCREEN_HEIGHT / 3 * 2},
-		hand_two_pos  = {SCREEN_WIDTH / 3 * 2, SCREEN_HEIGHT / 3 * 2},
-		ball_pos      = {SCREEN_WIDTH / 2, 16},
+		hand_one_pos = {SCREEN_WIDTH / 3, SCREEN_HEIGHT / 3 * 2},
+		hand_two_pos = {SCREEN_WIDTH / 3 * 2, SCREEN_HEIGHT / 3 * 2},
+		ball = {pos = {SCREEN_WIDTH / 2, 16}},
 		texture_atlas = texture_atlas,
 	}
 
@@ -185,19 +192,33 @@ main :: proc() {
 	delete_texture(game.texture_atlas)
 }
 
+update_mouse_one_shot_events :: proc(mouse_state: ^Mouse_State) {
+	mouse_state.button_pressed[.LEFT] = false
+	mouse_state.button_pressed[.RIGHT] = false
+	mouse_state.button_pressed[.MIDDLE] = false
+
+	mouse_state.button_released[.LEFT] = false
+	mouse_state.button_released[.RIGHT] = false
+	mouse_state.button_released[.MIDDLE] = false
+}
+
 tick :: proc(dt: f32, hwnd: win.HWND) {
 	if key_down[.ESC] {
 		unlock_cursor(hwnd)
 	}
 
 	if key_down[.R] {
-		game.ball_vel = {}
-		game.ball_pos = {SCREEN_WIDTH / 2, 16}
+		game.ball.vel = {}
+		game.ball.pos = {SCREEN_WIDTH / 2, 16}
 	}
 
 	// Update ball "physics"
-	game.ball_vel += GRAVITY * dt
-	game.ball_pos += game.ball_vel * dt
+	if !game.ball.grabbed {
+		game.ball.vel += GRAVITY * dt
+		game.ball.pos += game.ball.vel * dt
+	} else {
+		game.ball.pos = game.ball.follow_target^
+	}
 
 	game.hand_one_pos.x = f32(app_state.player_one_mouse.x)
 	game.hand_one_pos.y = f32(app_state.player_one_mouse.y)
@@ -220,19 +241,53 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 	}
 
 	ball_rect := Rect {
-		x = f32(game.ball_pos.x),
-		y = f32(game.ball_pos.y),
+		x = f32(game.ball.pos.x),
+		y = f32(game.ball.pos.y),
 		w = BALL_BBOX.x,
 		h = BALL_BBOX.y,
 	}
 
-	if rects_intersect(ball_rect, hand_one_rect) {
-		fmt.println("hand1 intersect")
+	if !game.ball.grabbed && app_state.player_one_mouse.button_pressed[.LEFT] && rects_intersect(ball_rect, hand_one_rect) {
+		game.ball.grabbed = true
+		game.ball.follow_target = &game.hand_one_pos
+		game.ball.last_grab_pos = game.ball.pos
+
+		fmt.println("hand one grabbed ball")
 	}
 
-	if rects_intersect(ball_rect, hand_two_rect) {
-		fmt.println("hand2 intersects")
+	if app_state.player_one_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == &game.hand_one_pos {
+		game.ball.grabbed = false
+		game.ball.follow_target = nil
+
+		// TODO: Clamp
+		ball_move_delta := game.hand_one_pos - game.ball.last_grab_pos
+		game.ball.vel = ball_move_delta
+		fmt.println("hand one dropped ball")
 	}
+
+	if !game.ball.grabbed && app_state.player_two_mouse.button_released[.LEFT] && rects_intersect(ball_rect, hand_two_rect) {
+		game.ball.grabbed = true
+		game.ball.follow_target = &game.hand_two_pos
+		game.ball.last_grab_pos = game.ball.pos
+
+		fmt.println("hand two grabbed ball")
+	}
+
+	if app_state.player_two_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == &game.hand_two_pos {
+		game.ball.grabbed = false
+		game.ball.follow_target = nil
+
+		// TODO: Clamp
+		ball_move_delta := game.hand_two_pos - game.ball.last_grab_pos
+		game.ball.vel = ball_move_delta
+		fmt.println("hand two dropped ball")
+	}
+
+	// Since windows only sends events whenever something changes, and not every frame.
+	// We could have a frame where the button is pressed and then no longer moved, in this case,
+	// both pressed and released states should be set to false, since they are "notifications"
+	update_mouse_one_shot_events(&app_state.player_one_mouse)
+	update_mouse_one_shot_events(&app_state.player_two_mouse)
 }
 
 calculate_hand_rect :: proc(x, y: i32) -> Rect {
@@ -288,7 +343,7 @@ draw :: proc(hwnd: win.HWND) {
 			h = BALL_BBOX.y,
 		}
 
-		draw_texture(game.texture_atlas, ball_rect, game.ball_pos, false)
+		draw_texture(game.texture_atlas, ball_rect, game.ball.pos, false)
 	}
 
 	// Begin painting of window. This gives a hdc: A device context handle,
