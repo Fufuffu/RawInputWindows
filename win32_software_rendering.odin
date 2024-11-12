@@ -33,6 +33,7 @@ Texture :: struct {
 Key :: enum {
 	None,
 	R,
+	ESC,
 }
 
 Game :: struct {
@@ -41,6 +42,27 @@ Game :: struct {
 	hand_two_pos:  Vec2,
 	ball_pos:      Vec2,
 	ball_vel:      Vec2,
+}
+
+Mouse_Button :: enum u8 {
+	LEFT = 0,
+	RIGHT,
+	MIDDLE,
+}
+
+Mouse_State :: struct {
+	// TODO: Use generational handle from lib when implemented
+	id:                 win.HANDLE,
+	x, y, scroll_wheel: i32,
+	button_down:        [Mouse_Button]bool,
+	button_pressed:     [Mouse_Button]bool,
+	button_released:    [Mouse_Button]bool,
+}
+
+App_State :: struct {
+	cursor_shown:     bool,
+	player_one_mouse: Mouse_State,
+	player_two_mouse: Mouse_State,
 }
 
 // Game constants
@@ -54,6 +76,7 @@ SCREEN_HEIGHT :: 180
 MOUSE_SENS_MULT: f32 : 4
 
 game: Game
+app_state: App_State
 
 // State of held keys
 key_down: [Key]bool
@@ -120,6 +143,10 @@ main :: proc() {
 		panic("Could not init raw mouse lib")
 	}
 
+	// Lock cursor
+	app_state.cursor_shown = true
+	lock_cursor(hwnd)
+
 	// Load texture atlas
 	texture_atlas, texture_atlas_ok := load_texture("texture_atlas.png")
 
@@ -142,7 +169,7 @@ main :: proc() {
 		// Calculate frame time: the time from previous to current frame
 		dt := f32(time.duration_seconds(time.tick_lap_time(&prev_time)))
 
-		tick(dt)
+		tick(dt, hwnd)
 
 		// This will make WM_PAINT run in the message loop, see wnd_proc
 		win.InvalidateRect(hwnd, nil, false)
@@ -158,7 +185,11 @@ main :: proc() {
 	delete_texture(game.texture_atlas)
 }
 
-tick :: proc(dt: f32) {
+tick :: proc(dt: f32, hwnd: win.HWND) {
+	if key_down[.ESC] {
+		unlock_cursor(hwnd)
+	}
+
 	if key_down[.R] {
 		game.ball_vel = {}
 		game.ball_pos = {SCREEN_WIDTH / 2, 16}
@@ -168,18 +199,11 @@ tick :: proc(dt: f32) {
 	game.ball_vel += GRAVITY * dt
 	game.ball_pos += game.ball_vel * dt
 
-	// Get mouse position
-	mouse0, ok0 := rm.get_raw_mouse(0)
-	if ok0 {
-		game.hand_one_pos.x = f32(mouse0.x)
-		game.hand_one_pos.y = f32(mouse0.y)
-	}
+	game.hand_one_pos.x = f32(app_state.player_one_mouse.x)
+	game.hand_one_pos.y = f32(app_state.player_one_mouse.y)
 
-	mouse1, ok1 := rm.get_raw_mouse(1)
-	if ok1 {
-		game.hand_two_pos.x = f32(mouse1.x)
-		game.hand_two_pos.y = f32(mouse1.y)
-	}
+	game.hand_two_pos.x = f32(app_state.player_two_mouse.x)
+	game.hand_two_pos.y = f32(app_state.player_two_mouse.y)
 
 	hand_one_rect := Rect {
 		x = f32(game.hand_one_pos.x),
@@ -334,14 +358,25 @@ draw_texture :: proc(t: Texture, src: Rect, pos: Vec2, flip_x: bool) {
 	}
 }
 
-mouse_pos_update :: proc(mouse: rm.Raw_Mouse, deltaX: i32, deltaY: i32) -> (x: i32, y: i32) {
-	scaled_delta_x := math.ceil(f32(abs(deltaX)) / MOUSE_SENS_MULT) * math.sign(f32(deltaX))
-	scaled_delta_y := math.ceil(f32(abs(deltaY)) / MOUSE_SENS_MULT) * math.sign(f32(deltaY))
+handle_mouse_update :: proc(mouse_state: ^Mouse_State, raw_mouse: rm.Raw_Mouse) {
+	scaled_delta_x := math.ceil(f32(abs(raw_mouse.x)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.x))
+	scaled_delta_y := math.ceil(f32(abs(raw_mouse.y)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.y))
 
-	x = math.clamp(i32(scaled_delta_x) + mouse.x, 0, SCREEN_WIDTH - 16)
-	y = math.clamp(i32(scaled_delta_y) + mouse.y, 0, SCREEN_HEIGHT - 16)
+	mouse_state.x = math.clamp(i32(scaled_delta_x) + mouse_state.x, 0, SCREEN_WIDTH - 16)
+	mouse_state.y = math.clamp(i32(scaled_delta_y) + mouse_state.y, 0, SCREEN_HEIGHT - 16)
+	mouse_state.scroll_wheel = raw_mouse.z
 
-	return x, y
+	mouse_state.button_pressed[.LEFT] = !mouse_state.button_down[.LEFT] && raw_mouse.left_button_down
+	mouse_state.button_pressed[.RIGHT] = !mouse_state.button_down[.RIGHT] && raw_mouse.right_button_down
+	mouse_state.button_pressed[.MIDDLE] = !mouse_state.button_down[.MIDDLE] && raw_mouse.middle_button_down
+
+	mouse_state.button_released[.LEFT] = mouse_state.button_down[.LEFT] && !raw_mouse.left_button_down
+	mouse_state.button_released[.RIGHT] = mouse_state.button_down[.RIGHT] && !raw_mouse.right_button_down
+	mouse_state.button_released[.MIDDLE] = mouse_state.button_down[.MIDDLE] && !raw_mouse.middle_button_down
+
+	mouse_state.button_down[.LEFT] = raw_mouse.left_button_down
+	mouse_state.button_down[.RIGHT] = raw_mouse.right_button_down
+	mouse_state.button_down[.MIDDLE] = raw_mouse.middle_button_down
 }
 
 win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
@@ -353,7 +388,20 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		return 0
 
 	case win.WM_INPUT:
-		rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)), mouse_pos_update)
+		raw_mouse, was_updated := rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)))
+		if was_updated {
+			if raw_mouse.handle == app_state.player_one_mouse.id {
+				handle_mouse_update(&app_state.player_one_mouse, raw_mouse)
+				return 0
+			}
+			if raw_mouse.handle == app_state.player_two_mouse.id {
+				handle_mouse_update(&app_state.player_two_mouse, raw_mouse)
+				return 0
+			}
+
+			fmt.eprintln("Got raw_mouse:", raw_mouse, "but it is not assigned to any player")
+			panic("Unexpected")
+		}
 		return 0
 
 	case win.WM_INPUT_DEVICE_CHANGE:
@@ -363,10 +411,41 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		switch wparam {
 		case GIDC_ARRIVAL:
 			fmt.println("added dev:", lparam)
-			rm.add_raw_mouse(win.HANDLE(uintptr(lparam)))
+			dev_handle := win.HANDLE(uintptr(lparam))
+			if rm.add_raw_mouse(dev_handle) {
+				//Assign mouse to player, TODO: Allow player to choose via KB
+				if app_state.player_one_mouse.id == nil {
+					app_state.player_one_mouse = Mouse_State {
+						id = dev_handle,
+					}
+					break
+				}
+				if app_state.player_two_mouse.id == nil {
+					app_state.player_two_mouse = Mouse_State {
+						id = dev_handle,
+					}
+					break
+				}
+				fmt.println("Got new device, but all players have one assigned: ", dev_handle)
+			}
 		case GIDC_REMOVAL:
 			fmt.println("removed dev:", lparam)
-			rm.remove_raw_mouse(win.HANDLE(uintptr(lparam)))
+			dev_handle := win.HANDLE(uintptr(lparam))
+			if rm.remove_raw_mouse(dev_handle) {
+				if app_state.player_one_mouse.id == dev_handle {
+					app_state.player_one_mouse = Mouse_State {
+						id = nil,
+					}
+					break
+				}
+				if app_state.player_two_mouse.id == dev_handle {
+					app_state.player_two_mouse = Mouse_State {
+						id = nil,
+					}
+					break
+				}
+				fmt.println("Removed a device, but it didnt belong to any player: ", dev_handle)
+			}
 		}
 
 		return 0
@@ -375,6 +454,8 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		switch wparam {
 		case win.VK_R:
 			key_down[.R] = true
+		case win.VK_ESCAPE:
+			key_down[.ESC] = true
 		}
 		return 0
 
@@ -382,6 +463,8 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		switch wparam {
 		case win.VK_R:
 			key_down[.R] = false
+		case win.VK_ESCAPE:
+			key_down[.ESC] = false
 		}
 		return 0
 
@@ -469,4 +552,32 @@ load_texture :: proc(filename: string) -> (Texture, bool) {
 
 delete_texture :: proc(t: Texture) {
 	delete(t.data)
+}
+
+// https://learn.microsoft.com/en-us/windows/win32/menurc/using-cursors
+lock_cursor :: proc(hwnd: win.HWND) {
+	if !app_state.cursor_shown do return
+
+	rect: win.RECT
+	win.GetClientRect(hwnd, &rect)
+	win.MapWindowPoints(hwnd, nil, &rect, 2)
+	if !win.ClipCursor(&rect) {
+		fmt.eprintln("Could not lock cursor")
+	}
+	if win.ShowCursor(false) != -1 {
+		fmt.eprintln("Cursor could not be hidden, display count is not -1")
+	}
+	app_state.cursor_shown = false
+}
+
+unlock_cursor :: proc(hwnd: win.HWND) {
+	if app_state.cursor_shown do return
+
+	if !win.ClipCursor(nil) {
+		fmt.eprintln("Could not unlock cursor")
+	}
+	if win.ShowCursor(true) != 0 {
+		fmt.eprintln("Cursor could not shown, display count is not 0")
+	}
+	app_state.cursor_shown = true
 }

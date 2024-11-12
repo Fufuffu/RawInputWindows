@@ -6,16 +6,16 @@ import "core:mem"
 import "core:strings"
 import win "core:sys/windows"
 
-MAX_MOUSE_BUTTONS :: 3
-
 mouse_list: [dynamic]Raw_Mouse
 
 Raw_Mouse :: struct {
-	handle:          win.HANDLE,
-	x:               i32,
-	y:               i32,
-	z:               i32,
-	buttons_pressed: [MAX_MOUSE_BUTTONS]bool,
+	handle:             win.HANDLE,
+	x:                  i32,
+	y:                  i32,
+	z:                  i32,
+	left_button_down:   bool,
+	right_button_down:  bool,
+	middle_button_down: bool,
 }
 
 // Inits the library, if report_device_changes is false, all the devices must be manually added using 
@@ -95,33 +95,36 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 update_mouse_pos_proc :: proc(mouse: Raw_Mouse, deltaX: i32, deltaY: i32) -> (x: i32, y: i32)
 
 // https://ph3at.github.io/posts/Windows-Input/
-update_raw_mouse :: proc(dHandle: win.HRAWINPUT, update_mouse_pos: update_mouse_pos_proc) -> bool {
+update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (raw_mouse: Raw_Mouse, updated: bool) {
+	raw_mouse = Raw_Mouse{}
+
 	size: u32
 	if win.GetRawInputData(dHandle, win.RID_INPUT, nil, &size, size_of(win.RAWINPUTHEADER)) != 0 {
 		fmt.eprintln("Could not raw input data header size for device:", dHandle)
-		return false
+		return raw_mouse, false
 	}
 
 	raw_input := win.RAWINPUT{}
 	if win.GetRawInputData(dHandle, win.RID_INPUT, &raw_input, &size, size_of(win.RAWINPUTHEADER)) == 4294967295 {
 		fmt.eprintln("Could not populate raw input header on device:", dHandle)
-		return false
+		return raw_mouse, false
 	}
 
 	for &mouse in mouse_list {
 		if mouse.handle == raw_input.header.hDevice {
 			// Position data
-			x, y := update_mouse_pos(mouse, raw_input.data.mouse.lLastX, raw_input.data.mouse.lLastY)
-			mouse.x = x
-			mouse.y = y
+			mouse.x = raw_input.data.mouse.lLastX
+			mouse.y = raw_input.data.mouse.lLastY
 
 			// Mouse buttons
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_DOWN) > 0 do mouse.buttons_pressed[0] = true
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_UP) > 0 do mouse.buttons_pressed[0] = false
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_2_DOWN) > 0 do mouse.buttons_pressed[1] = true
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_2_UP) > 0 do mouse.buttons_pressed[1] = false
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_3_DOWN) > 0 do mouse.buttons_pressed[2] = true
-			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_3_UP) > 0 do mouse.buttons_pressed[2] = false
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_DOWN) > 0 do mouse.left_button_down = true
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_1_UP) > 0 do mouse.left_button_down = false
+
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_2_DOWN) > 0 do mouse.right_button_down = true
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_2_UP) > 0 do mouse.right_button_down = false
+
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_3_DOWN) > 0 do mouse.middle_button_down = true
+			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_BUTTON_3_UP) > 0 do mouse.middle_button_down = false
 
 			// Mouse wheel
 			if (raw_input.data.mouse.usButtonFlags & win.RI_MOUSE_WHEEL) > 0 {
@@ -132,10 +135,12 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT, update_mouse_pos: update_mouse_
 					mouse.z -= 1
 				}
 			}
+
+			return mouse, true
 		}
 	}
 
-	return true
+	return raw_mouse, false
 }
 
 add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
@@ -172,7 +177,7 @@ remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
 		}
 	}
 
-	if pos == -1 do return true
+	if pos == -1 do return false
 
 	unordered_remove(&mouse_list, pos)
 
