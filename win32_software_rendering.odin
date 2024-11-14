@@ -220,22 +220,23 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 		game.ball.pos = game.ball.follow_target^
 	}
 
-	game.hand_one_pos.x = f32(app_state.player_one_mouse.x)
-	game.hand_one_pos.y = f32(app_state.player_one_mouse.y)
+	update_player_hand(&game.hand_one_pos, &app_state.player_one_mouse)
+	update_player_hand(&game.hand_two_pos, &app_state.player_two_mouse)
 
-	game.hand_two_pos.x = f32(app_state.player_two_mouse.x)
-	game.hand_two_pos.y = f32(app_state.player_two_mouse.y)
+	// Since windows only sends events whenever something changes, and not every frame.
+	// We could have a frame where the button is pressed and then no longer moved, in this case,
+	// both pressed and released states should be set to false, since they are "notifications"
+	update_mouse_one_shot_events(&app_state.player_one_mouse)
+	update_mouse_one_shot_events(&app_state.player_two_mouse)
+}
 
-	hand_one_rect := Rect {
-		x = f32(game.hand_one_pos.x),
-		y = f32(game.hand_one_pos.y),
-		w = HAND_BBOX.x,
-		h = HAND_BBOX.y,
-	}
+update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
+	hand_pos.x = f32(player_mouse.x)
+	hand_pos.y = f32(player_mouse.y)
 
-	hand_two_rect := Rect {
-		x = f32(game.hand_two_pos.x),
-		y = f32(game.hand_two_pos.y),
+	hand_rect := Rect {
+		x = f32(hand_pos.x),
+		y = f32(hand_pos.y),
 		w = HAND_BBOX.x,
 		h = HAND_BBOX.y,
 	}
@@ -247,47 +248,20 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 		h = BALL_BBOX.y,
 	}
 
-	if !game.ball.grabbed && app_state.player_one_mouse.button_pressed[.LEFT] && rects_intersect(ball_rect, hand_one_rect) {
+	if !game.ball.grabbed && player_mouse.button_pressed[.LEFT] && rects_intersect(ball_rect, hand_rect) {
 		game.ball.grabbed = true
-		game.ball.follow_target = &game.hand_one_pos
+		game.ball.follow_target = hand_pos
 		game.ball.last_grab_pos = game.ball.pos
-
-		fmt.println("hand one grabbed ball")
 	}
 
-	if app_state.player_one_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == &game.hand_one_pos {
+	if player_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == hand_pos {
 		game.ball.grabbed = false
 		game.ball.follow_target = nil
 
 		// TODO: Clamp
-		ball_move_delta := game.hand_one_pos - game.ball.last_grab_pos
+		ball_move_delta := hand_pos^ - game.ball.last_grab_pos
 		game.ball.vel = ball_move_delta
-		fmt.println("hand one dropped ball")
 	}
-
-	if !game.ball.grabbed && app_state.player_two_mouse.button_released[.LEFT] && rects_intersect(ball_rect, hand_two_rect) {
-		game.ball.grabbed = true
-		game.ball.follow_target = &game.hand_two_pos
-		game.ball.last_grab_pos = game.ball.pos
-
-		fmt.println("hand two grabbed ball")
-	}
-
-	if app_state.player_two_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == &game.hand_two_pos {
-		game.ball.grabbed = false
-		game.ball.follow_target = nil
-
-		// TODO: Clamp
-		ball_move_delta := game.hand_two_pos - game.ball.last_grab_pos
-		game.ball.vel = ball_move_delta
-		fmt.println("hand two dropped ball")
-	}
-
-	// Since windows only sends events whenever something changes, and not every frame.
-	// We could have a frame where the button is pressed and then no longer moved, in this case,
-	// both pressed and released states should be set to false, since they are "notifications"
-	update_mouse_one_shot_events(&app_state.player_one_mouse)
-	update_mouse_one_shot_events(&app_state.player_two_mouse)
 }
 
 calculate_hand_rect :: proc(x, y: i32) -> Rect {
