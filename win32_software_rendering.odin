@@ -51,19 +51,13 @@ Game :: struct {
 	ball:          Ball_State,
 }
 
-Mouse_Button :: enum u8 {
-	LEFT = 0,
-	RIGHT,
-	MIDDLE,
-}
-
 Mouse_State :: struct {
 	// TODO: Use generational handle from lib when implemented
 	id:                 win.HANDLE,
 	x, y, scroll_wheel: i32,
-	button_down:        [Mouse_Button]bool,
-	button_pressed:     [Mouse_Button]bool,
-	button_released:    [Mouse_Button]bool,
+	button_down:        [rm.Mouse_Button]bool,
+	button_pressed:     [rm.Mouse_Button]bool,
+	button_released:    [rm.Mouse_Button]bool,
 }
 
 App_State :: struct {
@@ -388,25 +382,25 @@ draw_texture :: proc(t: Texture, src: Rect, pos: Vec2, flip_x: bool) {
 	}
 }
 
-handle_mouse_update :: proc(mouse_state: ^Mouse_State, raw_mouse: rm.Raw_Mouse) {
-	scaled_delta_x := math.ceil(f32(abs(raw_mouse.x)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.x))
-	scaled_delta_y := math.ceil(f32(abs(raw_mouse.y)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.y))
+handle_mouse_update :: proc(mouse_state: ^Mouse_State, raw_mouse: rm.Raw_Mouse_State) {
+	scaled_delta_x := math.ceil(f32(abs(raw_mouse.delta_x)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.delta_x))
+	scaled_delta_y := math.ceil(f32(abs(raw_mouse.delta_y)) / MOUSE_SENS_MULT) * math.sign(f32(raw_mouse.delta_y))
 
 	mouse_state.x = math.clamp(i32(scaled_delta_x) + mouse_state.x, 0, SCREEN_WIDTH - 16)
 	mouse_state.y = math.clamp(i32(scaled_delta_y) + mouse_state.y, 0, SCREEN_HEIGHT - 16)
-	mouse_state.scroll_wheel = raw_mouse.z
+	mouse_state.scroll_wheel = raw_mouse.scroll_wheel_delta
 
-	mouse_state.button_pressed[.LEFT] = !mouse_state.button_down[.LEFT] && raw_mouse.left_button_down
-	mouse_state.button_pressed[.RIGHT] = !mouse_state.button_down[.RIGHT] && raw_mouse.right_button_down
-	mouse_state.button_pressed[.MIDDLE] = !mouse_state.button_down[.MIDDLE] && raw_mouse.middle_button_down
+	mouse_state.button_pressed[.LEFT] = !mouse_state.button_down[.LEFT] && raw_mouse.button_down[.LEFT]
+	mouse_state.button_pressed[.RIGHT] = !mouse_state.button_down[.RIGHT] && raw_mouse.button_down[.RIGHT]
+	mouse_state.button_pressed[.MIDDLE] = !mouse_state.button_down[.MIDDLE] && raw_mouse.button_down[.MIDDLE]
 
-	mouse_state.button_released[.LEFT] = mouse_state.button_down[.LEFT] && !raw_mouse.left_button_down
-	mouse_state.button_released[.RIGHT] = mouse_state.button_down[.RIGHT] && !raw_mouse.right_button_down
-	mouse_state.button_released[.MIDDLE] = mouse_state.button_down[.MIDDLE] && !raw_mouse.middle_button_down
+	mouse_state.button_released[.LEFT] = mouse_state.button_down[.LEFT] && !raw_mouse.button_down[.LEFT]
+	mouse_state.button_released[.RIGHT] = mouse_state.button_down[.RIGHT] && !raw_mouse.button_down[.RIGHT]
+	mouse_state.button_released[.MIDDLE] = mouse_state.button_down[.MIDDLE] && !raw_mouse.button_down[.MIDDLE]
 
-	mouse_state.button_down[.LEFT] = raw_mouse.left_button_down
-	mouse_state.button_down[.RIGHT] = raw_mouse.right_button_down
-	mouse_state.button_down[.MIDDLE] = raw_mouse.middle_button_down
+	mouse_state.button_down[.LEFT] = raw_mouse.button_down[.LEFT]
+	mouse_state.button_down[.RIGHT] = raw_mouse.button_down[.RIGHT]
+	mouse_state.button_down[.MIDDLE] = raw_mouse.button_down[.MIDDLE]
 }
 
 win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
@@ -437,7 +431,6 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 
 		switch wparam {
 		case GIDC_ARRIVAL:
-			fmt.println("added dev:", lparam)
 			dev_handle := win.HANDLE(uintptr(lparam))
 			if rm.add_raw_mouse(dev_handle) {
 				//Assign mouse to player, TODO: Allow player to choose via KB
@@ -445,30 +438,33 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 					app_state.player_one_mouse = Mouse_State {
 						id = dev_handle,
 					}
+					fmt.println("Assigned device:", dev_handle, "to player one")
 					break
 				}
 				if app_state.player_two_mouse.id == nil {
 					app_state.player_two_mouse = Mouse_State {
 						id = dev_handle,
 					}
+					fmt.println("Assigned device:", dev_handle, "to player two")
 					break
 				}
 				fmt.println("Got new device, but all players have one assigned: ", dev_handle)
 			}
 		case GIDC_REMOVAL:
-			fmt.println("removed dev:", lparam)
 			dev_handle := win.HANDLE(uintptr(lparam))
 			if rm.remove_raw_mouse(dev_handle) {
 				if app_state.player_one_mouse.id == dev_handle {
 					app_state.player_one_mouse = Mouse_State {
 						id = nil,
 					}
+					fmt.println("Disconnected player one mouse")
 					break
 				}
 				if app_state.player_two_mouse.id == dev_handle {
 					app_state.player_two_mouse = Mouse_State {
 						id = nil,
 					}
+					fmt.println("Disconnected player two mouse")
 					break
 				}
 				fmt.println("Removed a device, but it didnt belong to any player: ", dev_handle)
