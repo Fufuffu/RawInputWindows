@@ -1,5 +1,6 @@
 package raw_mouse
 
+import "core:c"
 import "core:fmt"
 import "core:math"
 import "core:mem"
@@ -17,6 +18,8 @@ Raw_Mouse :: struct {
 	right_button_down:  bool,
 	middle_button_down: bool,
 }
+
+RAW_ERROR_VALUE :: transmute(win.UINT)i32(-1)
 
 // Inits the library, if report_device_changes is false, all the devices must be manually added using 
 // get_valid_raw_mice_handles and add_raw_mouse. Otherwise, the message should be handled by calling add or remove raw mouse.
@@ -56,9 +59,7 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 	}
 
 	devices := make([]win.RAWINPUTDEVICELIST, num_devices, allocator)
-	// TODO: Check if error case is being handled correctly on all systems
-	// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getrawinputdevicelist#return-value
-	if win.GetRawInputDeviceList(raw_data(devices), &num_devices, size_of(win.RAWINPUTDEVICELIST)) == 4294967295 {
+	if win.GetRawInputDeviceList(raw_data(devices), &num_devices, size_of(win.RAWINPUTDEVICELIST)) == RAW_ERROR_VALUE {
 		fmt.eprintln("Could not get raw input device list")
 		return []win.HANDLE{}, false
 	}
@@ -66,6 +67,7 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 	valid_handles := make([dynamic]win.HANDLE, 0, len(devices))
 
 	// Get all mouses
+	// TODO: Move validation logic to it's own function, RDP might have to be optional since it allocates
 	RDP_String := "\\??\\Root#RDP_MOU#0000#"
 	for device in devices {
 		if device.dwType != win.RIM_TYPEMOUSE do continue
@@ -77,7 +79,7 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 		}
 
 		device_name_buf := make([]u8, size, allocator)
-		if win.GetRawInputDeviceInfoW(device.hDevice, win.RIDI_DEVICENAME, raw_data(device_name_buf), &size) == 4294967295 {
+		if win.GetRawInputDeviceInfoW(device.hDevice, win.RIDI_DEVICENAME, raw_data(device_name_buf), &size) == RAW_ERROR_VALUE {
 			fmt.eprintln("Could not get device name, ignoring...")
 			continue
 		}
@@ -92,8 +94,6 @@ get_valid_raw_mice_handles :: proc(allocator := context.allocator) -> (handles: 
 	return valid_handles[:], true
 }
 
-update_mouse_pos_proc :: proc(mouse: Raw_Mouse, deltaX: i32, deltaY: i32) -> (x: i32, y: i32)
-
 // https://ph3at.github.io/posts/Windows-Input/
 update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (raw_mouse: Raw_Mouse, updated: bool) {
 	raw_mouse = Raw_Mouse{}
@@ -105,7 +105,7 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (raw_mouse: Raw_Mouse, updat
 	}
 
 	raw_input := win.RAWINPUT{}
-	if win.GetRawInputData(dHandle, win.RID_INPUT, &raw_input, &size, size_of(win.RAWINPUTHEADER)) == 4294967295 {
+	if win.GetRawInputData(dHandle, win.RID_INPUT, &raw_input, &size, size_of(win.RAWINPUTHEADER)) == RAW_ERROR_VALUE {
 		fmt.eprintln("Could not populate raw input header on device:", dHandle)
 		return raw_mouse, false
 	}
@@ -154,8 +154,14 @@ add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
 		cbSize = u32(size_of(win.RID_DEVICE_INFO)),
 	}
 
-	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, &mouse_info, &size) == 4294967295 {
+	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, &mouse_info, &size) == RAW_ERROR_VALUE {
 		fmt.eprintln("Could not get information for device:", hDevice)
+		return false
+	}
+
+	// TODO: Some wireless numpads might be reported as mice, check if there's any way to avoid that
+	if mouse_info.dwType != win.RIM_TYPEMOUSE {
+		fmt.println("Ignoring device, it was not a mouse")
 		return false
 	}
 

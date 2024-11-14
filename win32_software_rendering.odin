@@ -73,7 +73,7 @@ App_State :: struct {
 }
 
 // Game constants
-GRAVITY :: Vec2{0, 25}
+GRAVITY :: Vec2{0, 30}
 HAND_BBOX :: Vec2{16, 16}
 BALL_BBOX :: Vec2{16, 16}
 
@@ -231,6 +231,7 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 }
 
 update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
+	// TODO: Keep X frames history and use that to calculate ball dir
 	hand_pos.x = f32(player_mouse.x)
 	hand_pos.y = f32(player_mouse.y)
 
@@ -427,9 +428,6 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 				handle_mouse_update(&app_state.player_two_mouse, raw_mouse)
 				return 0
 			}
-
-			fmt.eprintln("Got raw_mouse:", raw_mouse, "but it is not assigned to any player")
-			panic("Unexpected")
 		}
 		return 0
 
