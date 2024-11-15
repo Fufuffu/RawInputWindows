@@ -1,7 +1,7 @@
 package raw_mouse
 
 import "core:c"
-import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:mem"
 import "core:strings"
@@ -23,13 +23,10 @@ Raw_Mouse_State :: struct {
 }
 
 RAW_ERROR_VALUE :: transmute(win.UINT)i32(-1)
-RDP_STRING :: "\\??\\Root#RDP_MOU#0000#"
 
 registered_mice: map[win.HANDLE]Raw_Mouse_State
 lib_allocator: mem.Allocator
 ready: bool = false
-
-// TODO: Remove all fmt.xxx calls, use logging
 
 // Inits the library, if report_device_changes is false, all the devices must be manually added using 
 // add_all_connected_mice. Otherwise, the message should be handled by calling add or remove raw mouse.
@@ -51,7 +48,7 @@ init_raw_mouse :: proc(hwnd: win.HWND, report_device_changes: bool = true, alloc
 	}
 
 	if !win.RegisterRawInputDevices(&raw_input_device, 1, size_of(win.RAWINPUTDEVICELIST)) {
-		fmt.eprintln("Could not register the current hwnd as a raw device.")
+		log.error("Could not register the current hwnd as a raw device.")
 		return false
 	}
 
@@ -62,24 +59,24 @@ init_raw_mouse :: proc(hwnd: win.HWND, report_device_changes: bool = true, alloc
 // Adds all mice currently connected to the system (excludes RDP mouse if detected)
 add_all_connected_mice :: proc() -> bool {
 	if !ready {
-		fmt.eprintln("Cannot add mice, library is not yet initialized")
+		log.warn("Cannot add mice, library is not yet initialized")
 		return false
 	}
 
 	num_devices: u32
 	if win.GetRawInputDeviceList(nil, &num_devices, size_of(win.RAWINPUTDEVICELIST)) != 0 {
-		fmt.eprintln("Could not get raw input device count")
+		log.info("Could not get raw input device count")
 		return false
 	}
 
 	if num_devices <= 0 {
-		fmt.println("No devices, returning gracefully")
+		log.info("No devices, returning gracefully")
 		return true
 	}
 
 	devices := make([]win.RAWINPUTDEVICELIST, num_devices, context.temp_allocator)
 	if win.GetRawInputDeviceList(raw_data(devices), &num_devices, size_of(win.RAWINPUTDEVICELIST)) == RAW_ERROR_VALUE {
-		fmt.eprintln("Could not get raw input device list")
+		log.info("Could not get raw input device list")
 		return false
 	}
 
@@ -104,18 +101,19 @@ validate_and_get_device_name :: proc(hDevice: win.HANDLE, dwType: win.DWORD) -> 
 
 	size: u32
 	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICENAME, nil, &size) != 0 {
-		fmt.eprintln("Could not get device name size, ignoring...")
+		log.info("Could not get device name size, ignoring...")
 		return nil, false
 	}
 
 	device_name_buf = make([]u8, size, lib_allocator)
 	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICENAME, raw_data(device_name_buf), &size) == RAW_ERROR_VALUE {
-		fmt.eprintln("Could not get device name, ignoring...")
+		log.info("Could not get device name, ignoring...")
 		return nil, false
 	}
 	device_name_str := transmute(string)device_name_buf
 
 	// Skip RDP mouse (Windows terminal / remote desktop)
+	RDP_STRING :: "\\??\\Root#RDP_MOU#0000#"
 	if strings.contains(device_name_str, RDP_STRING) {
 		return nil, false
 	}
@@ -126,19 +124,19 @@ validate_and_get_device_name :: proc(hDevice: win.HANDLE, dwType: win.DWORD) -> 
 // https://ph3at.github.io/posts/Windows-Input/
 update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (mouse_state: Raw_Mouse_State, updated: bool) {
 	if !ready {
-		fmt.eprintln("Cannot update mouse, library is not yet initialized")
+		log.warn("Cannot update mouse, library is not yet initialized")
 		return Raw_Mouse_State{}, false
 	}
 
 	size: u32
 	if win.GetRawInputData(dHandle, win.RID_INPUT, nil, &size, size_of(win.RAWINPUTHEADER)) != 0 {
-		fmt.eprintln("Could not raw input data header size for device:", dHandle)
+		log.info("Could not raw input data header size for device:", dHandle)
 		return Raw_Mouse_State{}, false
 	}
 
 	raw_input := win.RAWINPUT{}
 	if win.GetRawInputData(dHandle, win.RID_INPUT, &raw_input, &size, size_of(win.RAWINPUTHEADER)) == RAW_ERROR_VALUE {
-		fmt.eprintln("Could not populate raw input header on device:", dHandle)
+		log.info("Could not populate raw input header on device:", dHandle)
 		return Raw_Mouse_State{}, false
 	}
 
@@ -182,13 +180,13 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (mouse_state: Raw_Mouse_Stat
 
 add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
 	if !ready {
-		fmt.eprintln("Cannot add mouse, library is not yet initialized")
+		log.warn("Cannot add mouse, library is not yet initialized")
 		return false
 	}
 
 	size: u32
 	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, nil, &size) != 0 {
-		fmt.eprintln("Could not get size of Device Info struct for device:", hDevice)
+		log.debug("Could not get size of Device Info struct for device:", hDevice)
 		return false
 	}
 
@@ -197,7 +195,7 @@ add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
 	}
 
 	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICEINFO, &mouse_info, &size) == RAW_ERROR_VALUE {
-		fmt.eprintln("Could not get information for device:", hDevice)
+		log.info("Could not get information for device:", hDevice)
 		return false
 	}
 
@@ -216,7 +214,7 @@ add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
 
 remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
 	if !ready {
-		fmt.eprintln("Cannot remove mouse, library is not yet initialized")
+		log.warn("Cannot remove mouse, library is not yet initialized")
 		return false
 	}
 
@@ -229,7 +227,7 @@ remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
 
 get_raw_mouse_info :: proc(dHandle: win.HANDLE) -> (mouse_info: Raw_Mouse_State, ok: bool) {
 	if !ready {
-		fmt.eprintln("Cannot get mouse, library is not yet initialized")
+		log.warn("Cannot get mouse, library is not yet initialized")
 		return Raw_Mouse_State{}, false
 	}
 

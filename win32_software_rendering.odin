@@ -37,11 +37,13 @@ Key :: enum {
 }
 
 Ball_State :: struct {
-	pos:           Vec2,
-	vel:           Vec2,
-	follow_target: ^Vec2,
-	grabbed:       bool,
-	last_grab_pos: Vec2,
+	pos:                 Vec2,
+	vel:                 Vec2,
+	follow_target:       ^Vec2,
+	grabbed:             bool,
+	last_grab_pos:       Vec2,
+	cur_grab_pos:        Vec2,
+	grab_update_counter: u16,
 }
 
 Game :: struct {
@@ -52,8 +54,7 @@ Game :: struct {
 }
 
 Mouse_State :: struct {
-	// TODO: Use generational handle from lib when implemented
-	id:                 win.HANDLE,
+	handle:             win.HANDLE,
 	x, y, scroll_wheel: i32,
 	button_down:        [rm.Mouse_Button]bool,
 	button_pressed:     [rm.Mouse_Button]bool,
@@ -70,6 +71,7 @@ App_State :: struct {
 GRAVITY :: Vec2{0, 30}
 HAND_BBOX :: Vec2{16, 16}
 BALL_BBOX :: Vec2{16, 16}
+HAND_THROW_DELAY_FRAMES: u16 : 240
 
 // The size of the bitmap we will use for drawing. Will be scaled up to window.
 SCREEN_WIDTH :: 320
@@ -212,6 +214,12 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 		game.ball.pos += game.ball.vel * dt
 	} else {
 		game.ball.pos = game.ball.follow_target^
+		game.ball.grab_update_counter += 1
+		if game.ball.grab_update_counter == HAND_THROW_DELAY_FRAMES - 1 {
+			game.ball.grab_update_counter = 0
+			game.ball.last_grab_pos = game.ball.cur_grab_pos
+			game.ball.cur_grab_pos = game.ball.pos
+		}
 	}
 
 	update_player_hand(&game.hand_one_pos, &app_state.player_one_mouse)
@@ -225,7 +233,6 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 }
 
 update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
-	// TODO: Keep X frames history and use that to calculate ball dir
 	hand_pos.x = f32(player_mouse.x)
 	hand_pos.y = f32(player_mouse.y)
 
@@ -247,14 +254,23 @@ update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
 		game.ball.grabbed = true
 		game.ball.follow_target = hand_pos
 		game.ball.last_grab_pos = game.ball.pos
+		game.ball.cur_grab_pos = game.ball.pos
+		game.ball.grab_update_counter = 0
 	}
 
 	if player_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == hand_pos {
 		game.ball.grabbed = false
 		game.ball.follow_target = nil
 
+		last_pos: Vec2
+		if game.ball.grab_update_counter < HAND_THROW_DELAY_FRAMES / 2 {
+			last_pos = game.ball.last_grab_pos
+		} else {
+			last_pos = game.ball.cur_grab_pos
+		}
+
 		// TODO: Clamp
-		ball_move_delta := hand_pos^ - game.ball.last_grab_pos
+		ball_move_delta := hand_pos^ - last_pos
 		game.ball.vel = ball_move_delta
 	}
 }
@@ -414,11 +430,11 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 	case win.WM_INPUT:
 		raw_mouse, was_updated := rm.update_raw_mouse(win.HRAWINPUT(uintptr(lparam)))
 		if was_updated {
-			if raw_mouse.handle == app_state.player_one_mouse.id {
+			if raw_mouse.handle == app_state.player_one_mouse.handle {
 				handle_mouse_update(&app_state.player_one_mouse, raw_mouse)
 				return 0
 			}
-			if raw_mouse.handle == app_state.player_two_mouse.id {
+			if raw_mouse.handle == app_state.player_two_mouse.handle {
 				handle_mouse_update(&app_state.player_two_mouse, raw_mouse)
 				return 0
 			}
@@ -434,16 +450,16 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 			dev_handle := win.HANDLE(uintptr(lparam))
 			if rm.add_raw_mouse(dev_handle) {
 				//Assign mouse to player, TODO: Allow player to choose via KB
-				if app_state.player_one_mouse.id == nil {
+				if app_state.player_one_mouse.handle == nil {
 					app_state.player_one_mouse = Mouse_State {
-						id = dev_handle,
+						handle = dev_handle,
 					}
 					fmt.println("Assigned device:", dev_handle, "to player one")
 					break
 				}
-				if app_state.player_two_mouse.id == nil {
+				if app_state.player_two_mouse.handle == nil {
 					app_state.player_two_mouse = Mouse_State {
-						id = dev_handle,
+						handle = dev_handle,
 					}
 					fmt.println("Assigned device:", dev_handle, "to player two")
 					break
@@ -453,16 +469,16 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		case GIDC_REMOVAL:
 			dev_handle := win.HANDLE(uintptr(lparam))
 			if rm.remove_raw_mouse(dev_handle) {
-				if app_state.player_one_mouse.id == dev_handle {
+				if app_state.player_one_mouse.handle == dev_handle {
 					app_state.player_one_mouse = Mouse_State {
-						id = nil,
+						handle = nil,
 					}
 					fmt.println("Disconnected player one mouse")
 					break
 				}
-				if app_state.player_two_mouse.id == dev_handle {
+				if app_state.player_two_mouse.handle == dev_handle {
 					app_state.player_two_mouse = Mouse_State {
-						id = nil,
+						handle = nil,
 					}
 					fmt.println("Disconnected player two mouse")
 					break
