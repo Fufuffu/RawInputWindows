@@ -225,6 +225,23 @@ remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
 	return true
 }
 
+get_registered_mice_count :: proc() -> int {
+	return len(registered_mice)
+}
+
+get_registered_mice_handles :: proc(mice_handles: []win.HANDLE, length: ^int) -> bool {
+	if len(mice_handles) < len(registered_mice) do return false
+
+	i: int
+	for handle, _ in registered_mice {
+		mice_handles[i] = handle
+		i += 1
+	}
+	length^ = i + 1
+
+	return true
+}
+
 get_raw_mouse_info :: proc(dHandle: win.HANDLE) -> (mouse_info: Raw_Mouse_State, ok: bool) {
 	if !ready {
 		log.warn("Cannot get mouse, library is not yet initialized")

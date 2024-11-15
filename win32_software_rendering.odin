@@ -34,6 +34,8 @@ Key :: enum {
 	None,
 	R,
 	ESC,
+	UP,
+	DOWN,
 }
 
 Ball_State :: struct {
@@ -42,8 +44,7 @@ Ball_State :: struct {
 	follow_target:       ^Vec2,
 	grabbed:             bool,
 	last_grab_pos:       Vec2,
-	cur_grab_pos:        Vec2,
-	grab_update_counter: u16,
+	grab_update_counter: f32,
 }
 
 Game :: struct {
@@ -62,16 +63,21 @@ Mouse_State :: struct {
 }
 
 App_State :: struct {
-	cursor_shown:     bool,
-	player_one_mouse: Mouse_State,
-	player_two_mouse: Mouse_State,
+	cursor_shown:         bool,
+	player_one_mouse:     Mouse_State,
+	player_two_mouse:     Mouse_State,
+	// Assume this demo app will never have more than 5 total mice connected to the system
+	mice_handles_buf:     [5]win.HANDLE,
+	mice_handles_buf_len: int,
 }
 
 // Game constants
-GRAVITY :: Vec2{0, 30}
+GRAVITY :: Vec2{0, 40}
 HAND_BBOX :: Vec2{16, 16}
 BALL_BBOX :: Vec2{16, 16}
-HAND_THROW_DELAY_FRAMES: u16 : 240
+BALL_MAX_DELTA :: Vec2{40, 30}
+BALL_THROW_VEL_MULT :: Vec2{2, 3}
+HAND_THROW_DELAY_MS: f32 : 100
 
 // The size of the bitmap we will use for drawing. Will be scaled up to window.
 SCREEN_WIDTH :: 320
@@ -188,19 +194,17 @@ main :: proc() {
 	delete_texture(game.texture_atlas)
 }
 
-update_mouse_one_shot_events :: proc(mouse_state: ^Mouse_State) {
-	mouse_state.button_pressed[.LEFT] = false
-	mouse_state.button_pressed[.RIGHT] = false
-	mouse_state.button_pressed[.MIDDLE] = false
-
-	mouse_state.button_released[.LEFT] = false
-	mouse_state.button_released[.RIGHT] = false
-	mouse_state.button_released[.MIDDLE] = false
-}
-
 tick :: proc(dt: f32, hwnd: win.HWND) {
 	if key_down[.ESC] {
 		unlock_cursor(hwnd)
+	}
+
+	if key_down[.UP] {
+		use_next_mouse(&app_state.player_one_mouse)
+	}
+
+	if key_down[.DOWN] {
+		use_next_mouse(&app_state.player_two_mouse)
 	}
 
 	if key_down[.R] {
@@ -208,17 +212,15 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 		game.ball.pos = {SCREEN_WIDTH / 2, 16}
 	}
 
-	// Update ball "physics"
 	if !game.ball.grabbed {
 		game.ball.vel += GRAVITY * dt
 		game.ball.pos += game.ball.vel * dt
 	} else {
 		game.ball.pos = game.ball.follow_target^
-		game.ball.grab_update_counter += 1
-		if game.ball.grab_update_counter == HAND_THROW_DELAY_FRAMES - 1 {
+		game.ball.grab_update_counter += dt
+		if game.ball.grab_update_counter >= HAND_THROW_DELAY_MS / 1000 {
 			game.ball.grab_update_counter = 0
-			game.ball.last_grab_pos = game.ball.cur_grab_pos
-			game.ball.cur_grab_pos = game.ball.pos
+			game.ball.last_grab_pos = game.ball.pos
 		}
 	}
 
@@ -230,6 +232,13 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 	// both pressed and released states should be set to false, since they are "notifications"
 	update_mouse_one_shot_events(&app_state.player_one_mouse)
 	update_mouse_one_shot_events(&app_state.player_two_mouse)
+}
+
+use_next_mouse :: proc(player_mouse: ^Mouse_State) -> bool {
+	rm.get_registered_mice_handles(app_state.mice_handles_buf[:], &app_state.mice_handles_buf_len) or_return
+
+	fmt.println("mice handles:", app_state.mice_handles_buf[:app_state.mice_handles_buf_len - 1])
+	return true
 }
 
 update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
@@ -254,33 +263,33 @@ update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
 		game.ball.grabbed = true
 		game.ball.follow_target = hand_pos
 		game.ball.last_grab_pos = game.ball.pos
-		game.ball.cur_grab_pos = game.ball.pos
 		game.ball.grab_update_counter = 0
 	}
 
-	if player_mouse.button_released[.LEFT] && game.ball.grabbed && game.ball.follow_target == hand_pos {
+	if player_mouse.button_released[.LEFT] && game.ball.grabbed {
 		game.ball.grabbed = false
 		game.ball.follow_target = nil
 
-		last_pos: Vec2
-		if game.ball.grab_update_counter < HAND_THROW_DELAY_FRAMES / 2 {
-			last_pos = game.ball.last_grab_pos
-		} else {
-			last_pos = game.ball.cur_grab_pos
-		}
+		ball_move_delta := hand_pos^ - game.ball.last_grab_pos
+		ball_move_delta.x = math.clamp(math.abs(ball_move_delta.x), 0, BALL_MAX_DELTA.x) * math.sign(ball_move_delta.x)
+		ball_move_delta.y = math.clamp(math.abs(ball_move_delta.y), 0, BALL_MAX_DELTA.y) * math.sign(ball_move_delta.y)
 
-		// TODO: Clamp
-		ball_move_delta := hand_pos^ - last_pos
-		game.ball.vel = ball_move_delta
+		game.ball.vel = ball_move_delta * BALL_THROW_VEL_MULT
 	}
-}
-
-calculate_hand_rect :: proc(x, y: i32) -> Rect {
-	return Rect{x = f32(x), y = f32(y), w = HAND_BBOX.x, h = HAND_BBOX.y}
 }
 
 rects_intersect :: proc(a: Rect, b: Rect) -> bool {
 	return a.x <= (b.x + b.w) && (a.x + a.w) >= b.x && (a.y + a.h) >= b.y && a.y <= (b.y + b.h)
+}
+
+update_mouse_one_shot_events :: proc(mouse_state: ^Mouse_State) {
+	mouse_state.button_pressed[.LEFT] = false
+	mouse_state.button_pressed[.RIGHT] = false
+	mouse_state.button_pressed[.MIDDLE] = false
+
+	mouse_state.button_released[.LEFT] = false
+	mouse_state.button_released[.RIGHT] = false
+	mouse_state.button_released[.MIDDLE] = false
 }
 
 // Runs Windows message pump. The DispatchMessageW call will run `wnd_proc` if
@@ -495,6 +504,10 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 			key_down[.R] = true
 		case win.VK_ESCAPE:
 			key_down[.ESC] = true
+		case win.VK_UP:
+			key_down[.UP] = true
+		case win.VK_DOWN:
+			key_down[.DOWN] = true
 		}
 		return 0
 
@@ -504,6 +517,10 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 			key_down[.R] = false
 		case win.VK_ESCAPE:
 			key_down[.ESC] = false
+		case win.VK_UP:
+			key_down[.UP] = false
+		case win.VK_DOWN:
+			key_down[.DOWN] = false
 		}
 		return 0
 
