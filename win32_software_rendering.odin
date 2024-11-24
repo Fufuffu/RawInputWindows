@@ -207,12 +207,12 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 	}
 
 	if key_pressed[.UP] {
-		fmt.println("Circling selected mouse for player one")
+		log.info("Circling selected mouse for player one")
 		use_next_mouse(&app_state.player_one_mouse)
 	}
 
 	if key_pressed[.DOWN] {
-		fmt.println("Circling selected mouse for player two")
+		log.info("Circling selected mouse for player two")
 		use_next_mouse(&app_state.player_two_mouse)
 	}
 
@@ -263,7 +263,7 @@ use_next_mouse :: proc(player_mouse: ^Mouse_State) -> bool {
 
 		if handle != app_state.player_one_mouse.handle && handle != app_state.player_two_mouse.handle {
 			player_mouse.handle = handle
-			fmt.println("Assigned device with handle:", handle)
+			log.info("Assigned device with handle:", handle)
 			return true
 		}
 		counter += 1
@@ -441,17 +441,11 @@ handle_mouse_update :: proc(mouse_state: ^Mouse_State, raw_mouse: rm.Raw_Mouse_S
 	mouse_state.y = math.clamp(i32(scaled_delta_y) + mouse_state.y, 0, SCREEN_HEIGHT - 16)
 	mouse_state.scroll_wheel = raw_mouse.scroll_wheel_delta
 
-	mouse_state.button_pressed[.LEFT] = !mouse_state.button_down[.LEFT] && raw_mouse.button_down[.LEFT]
-	mouse_state.button_pressed[.RIGHT] = !mouse_state.button_down[.RIGHT] && raw_mouse.button_down[.RIGHT]
-	mouse_state.button_pressed[.MIDDLE] = !mouse_state.button_down[.MIDDLE] && raw_mouse.button_down[.MIDDLE]
-
-	mouse_state.button_released[.LEFT] = mouse_state.button_down[.LEFT] && !raw_mouse.button_down[.LEFT]
-	mouse_state.button_released[.RIGHT] = mouse_state.button_down[.RIGHT] && !raw_mouse.button_down[.RIGHT]
-	mouse_state.button_released[.MIDDLE] = mouse_state.button_down[.MIDDLE] && !raw_mouse.button_down[.MIDDLE]
-
-	mouse_state.button_down[.LEFT] = raw_mouse.button_down[.LEFT]
-	mouse_state.button_down[.RIGHT] = raw_mouse.button_down[.RIGHT]
-	mouse_state.button_down[.MIDDLE] = raw_mouse.button_down[.MIDDLE]
+	for button in rm.Mouse_Button {
+		mouse_state.button_pressed[button] = !mouse_state.button_down[button] && raw_mouse.button_down[button]
+		mouse_state.button_released[button] = mouse_state.button_down[button] && !raw_mouse.button_down[button]
+		mouse_state.button_down[button] = raw_mouse.button_down[button]
+	}
 }
 
 win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
@@ -522,7 +516,6 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 				fmt.println("Removed a device, but it didnt belong to any player: ", dev_handle)
 			}
 		}
-
 		return 0
 
 	case win.WM_KEYDOWN:
@@ -605,7 +598,7 @@ floor_to_int :: proc(v: f32) -> int {
 	return int(math.floor(v))
 }
 
-// Loads an iomage with a specific filename and makes it into a `Texture` struct
+// Loads an image with a specific filename and makes it into a `Texture` struct
 load_texture :: proc(filename: string) -> (Texture, bool) {
 	img, img_err := image.load_from_file(filename, allocator = context.temp_allocator)
 
