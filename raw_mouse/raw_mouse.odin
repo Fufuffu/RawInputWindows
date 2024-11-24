@@ -24,18 +24,23 @@ Raw_Mouse_State :: struct {
 
 RAW_ERROR_VALUE :: transmute(win.UINT)i32(-1)
 
-registered_mice: map[win.HANDLE]Raw_Mouse_State
-lib_allocator: mem.Allocator
-ready: bool = false
+Lib_State :: struct {
+	registered_mice: map[win.HANDLE]Raw_Mouse_State,
+	generation:      u32,
+	allocator:       mem.Allocator,
+	ready:           bool,
+}
+
+state: Lib_State
 
 // Inits the library, if report_device_changes is false, all the devices must be manually added using 
-// add_all_connected_mice. Otherwise, the message should be handled by calling add or remove raw mouse.
+// register_all_connected_mice. Otherwise, the message should be handled by calling register or deregister raw mouse.
 init_raw_mouse :: proc(hwnd: win.HWND, report_device_changes: bool = true, allocator := context.allocator) -> bool {
 	// Save the allocator for all further operations
-	lib_allocator = allocator
+	state.allocator = allocator
 
 	// Init mouse info memory
-	registered_mice = make(map[win.HANDLE]Raw_Mouse_State, allocator = lib_allocator)
+	state.registered_mice = make(map[win.HANDLE]Raw_Mouse_State, allocator = state.allocator)
 
 	dwFlags: u32
 	if report_device_changes do dwFlags = win.RIDEV_DEVNOTIFY
@@ -52,13 +57,13 @@ init_raw_mouse :: proc(hwnd: win.HWND, report_device_changes: bool = true, alloc
 		return false
 	}
 
-	ready = true
+	state.ready = true
 	return true
 }
 
 // Adds all mice currently connected to the system (excludes RDP mouse if detected)
-add_all_connected_mice :: proc() -> bool {
-	if !ready {
+register_all_connected_mice :: proc() -> bool {
+	if !state.ready {
 		log.warn("Cannot add mice, library is not yet initialized")
 		return false
 	}
@@ -88,7 +93,8 @@ add_all_connected_mice :: proc() -> bool {
 				device_name = transmute(string)device_name_buf,
 			}
 
-			registered_mice[device.hDevice] = mouse
+			state.registered_mice[device.hDevice] = mouse
+			state.generation += 1
 		}
 	}
 
@@ -105,7 +111,7 @@ validate_and_get_device_name :: proc(hDevice: win.HANDLE, dwType: win.DWORD) -> 
 		return nil, false
 	}
 
-	device_name_buf = make([]u8, size, lib_allocator)
+	device_name_buf = make([]u8, size, state.allocator)
 	if win.GetRawInputDeviceInfoW(hDevice, win.RIDI_DEVICENAME, raw_data(device_name_buf), &size) == RAW_ERROR_VALUE {
 		log.info("Could not get device name, ignoring...")
 		return nil, false
@@ -123,7 +129,7 @@ validate_and_get_device_name :: proc(hDevice: win.HANDLE, dwType: win.DWORD) -> 
 
 // https://ph3at.github.io/posts/Windows-Input/
 update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (mouse_state: Raw_Mouse_State, updated: bool) {
-	if !ready {
+	if !state.ready {
 		log.warn("Cannot update mouse, library is not yet initialized")
 		return Raw_Mouse_State{}, false
 	}
@@ -143,7 +149,7 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (mouse_state: Raw_Mouse_Stat
 	// Windows only reports state changes, therefore we must constantly write over the last state
 	// in order to ensure button presses mantain their state (if there's no update, it is still pressed
 	// even if the mouse just moved and windows only reports that)
-	last_mouse_state, exists := &registered_mice[raw_input.header.hDevice]
+	last_mouse_state, exists := &state.registered_mice[raw_input.header.hDevice]
 	if exists {
 		// Set handle
 		last_mouse_state.handle = raw_input.header.hDevice
@@ -178,9 +184,9 @@ update_raw_mouse :: proc(dHandle: win.HRAWINPUT) -> (mouse_state: Raw_Mouse_Stat
 	return Raw_Mouse_State{}, false
 }
 
-add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
-	if !ready {
-		log.warn("Cannot add mouse, library is not yet initialized")
+register_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
+	if !state.ready {
+		log.warn("Cannot register mouse, library is not yet initialized")
 		return false
 	}
 
@@ -205,61 +211,71 @@ add_raw_mouse :: proc(hDevice: win.HANDLE) -> bool {
 			handle      = hDevice,
 			device_name = transmute(string)device_name_buf,
 		}
-		registered_mice[hDevice] = mouse
+		state.registered_mice[hDevice] = mouse
+		state.generation += 1
 		return true
 	}
 
 	return false
 }
 
-remove_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
-	if !ready {
-		log.warn("Cannot remove mouse, library is not yet initialized")
+deregister_raw_mouse :: proc(dHandle: win.HANDLE) -> bool {
+	if !state.ready {
+		log.warn("Cannot deregister mouse, library is not yet initialized")
 		return false
 	}
 
-	if !(dHandle in registered_mice) do return false
+	if !(dHandle in state.registered_mice) do return false
 
-	delete_key(&registered_mice, dHandle)
+	delete_key(&state.registered_mice, dHandle)
+	state.generation += 1
 
 	return true
 }
 
 get_registered_mice_count :: proc() -> int {
-	return len(registered_mice)
+	return len(state.registered_mice)
 }
 
-get_registered_mice_handles :: proc(mice_handles: []win.HANDLE, length: ^int) -> bool {
-	if len(mice_handles) < len(registered_mice) do return false
+get_registered_mice_handles :: proc(mice_handles: []win.HANDLE, length: ^int) -> (generation: u32, ok: bool) {
+	if !state.ready {
+		log.warn("Cannot get handles, library is not yet initialized")
+		return state.generation, false
+	}
+
+	if len(mice_handles) < len(state.registered_mice) {
+		log.warn("Buffer is not big enough to fit all registered mouse handles")
+		return state.generation, false
+	}
 
 	i: int
-	for handle, _ in registered_mice {
+	for handle, _ in state.registered_mice {
 		mice_handles[i] = handle
 		i += 1
 	}
-	length^ = i + 1
+	length^ = i
 
-	return true
+	return state.generation, true
 }
 
 get_raw_mouse_info :: proc(dHandle: win.HANDLE) -> (mouse_info: Raw_Mouse_State, ok: bool) {
-	if !ready {
+	if !state.ready {
 		log.warn("Cannot get mouse, library is not yet initialized")
 		return Raw_Mouse_State{}, false
 	}
 
-	mouse_info, ok = registered_mice[dHandle]
+	mouse_info, ok = state.registered_mice[dHandle]
 
 	return mouse_info, ok
 }
 
 // Clears all device names and mouse list
 destroy_raw_mouse :: proc() {
-	if !ready do return
+	if !state.ready do return
 
-	for _, info in registered_mice {
+	for _, info in state.registered_mice {
 		delete(info.device_name)
 	}
-	delete(registered_mice)
-	ready = false
+	delete(state.registered_mice)
+	state.ready = false
 }

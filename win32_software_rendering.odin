@@ -55,11 +55,13 @@ Game :: struct {
 }
 
 Mouse_State :: struct {
-	handle:             win.HANDLE,
-	x, y, scroll_wheel: i32,
-	button_down:        [rm.Mouse_Button]bool,
-	button_pressed:     [rm.Mouse_Button]bool,
-	button_released:    [rm.Mouse_Button]bool,
+	handle:                  win.HANDLE,
+	x, y, scroll_wheel:      i32,
+	button_down:             [rm.Mouse_Button]bool,
+	button_pressed:          [rm.Mouse_Button]bool,
+	button_released:         [rm.Mouse_Button]bool,
+	last_selected_mouse_idx: int,
+	last_mouse_generation:   u32,
 }
 
 App_State :: struct {
@@ -72,12 +74,12 @@ App_State :: struct {
 }
 
 // Game constants
-GRAVITY :: Vec2{0, 40}
+GRAVITY :: Vec2{0, 100}
 HAND_BBOX :: Vec2{16, 16}
 BALL_BBOX :: Vec2{16, 16}
 BALL_MAX_DELTA :: Vec2{40, 30}
-BALL_THROW_VEL_MULT :: Vec2{2, 3}
-HAND_THROW_DELAY_MS: f32 : 100
+BALL_THROW_VEL_MULT :: Vec2{2.5, 4.5}
+HAND_THROW_DELAY_MS: f32 : 120
 
 // The size of the bitmap we will use for drawing. Will be scaled up to window.
 SCREEN_WIDTH :: 320
@@ -89,6 +91,7 @@ app_state: App_State
 
 // State of held keys
 key_down: [Key]bool
+key_pressed: [Key]bool
 
 // 2 color palette (1 bit graphics)
 PALETTE :: [2]Color{{41, 61, 49, 255}, {241, 167, 189, 255}}
@@ -114,7 +117,7 @@ main :: proc() {
 
 	// Create a new type of window with the type name `window_class_name`,
 	// `win_proc` is the procedure that is run when the window is sent messages.
-	window_class_name := win.L("SoftwareRenderingExample")
+	window_class_name := win.L("Raw Input Windows Example")
 	window_class := win.WNDCLASSW {
 		lpfnWndProc   = win_proc,
 		lpszClassName = window_class_name,
@@ -195,19 +198,25 @@ main :: proc() {
 }
 
 tick :: proc(dt: f32, hwnd: win.HWND) {
-	if key_down[.ESC] {
-		unlock_cursor(hwnd)
+	if key_pressed[.ESC] {
+		if app_state.cursor_shown {
+			lock_cursor(hwnd)
+		} else {
+			unlock_cursor(hwnd)
+		}
 	}
 
-	if key_down[.UP] {
+	if key_pressed[.UP] {
+		fmt.println("Circling selected mouse for player one")
 		use_next_mouse(&app_state.player_one_mouse)
 	}
 
-	if key_down[.DOWN] {
+	if key_pressed[.DOWN] {
+		fmt.println("Circling selected mouse for player two")
 		use_next_mouse(&app_state.player_two_mouse)
 	}
 
-	if key_down[.R] {
+	if key_pressed[.R] {
 		game.ball.vel = {}
 		game.ball.pos = {SCREEN_WIDTH / 2, 16}
 	}
@@ -227,18 +236,40 @@ tick :: proc(dt: f32, hwnd: win.HWND) {
 	update_player_hand(&game.hand_one_pos, &app_state.player_one_mouse)
 	update_player_hand(&game.hand_two_pos, &app_state.player_two_mouse)
 
-	// Since windows only sends events whenever something changes, and not every frame.
-	// We could have a frame where the button is pressed and then no longer moved, in this case,
+	// Since windows only sends events whenever something changes and not every frame,
+	// we could have a frame where the button is pressed and then no more events are sent, in this case,
 	// both pressed and released states should be set to false, since they are "notifications"
 	update_mouse_one_shot_events(&app_state.player_one_mouse)
 	update_mouse_one_shot_events(&app_state.player_two_mouse)
+	key_pressed = {}
 }
 
 use_next_mouse :: proc(player_mouse: ^Mouse_State) -> bool {
-	rm.get_registered_mice_handles(app_state.mice_handles_buf[:], &app_state.mice_handles_buf_len) or_return
+	new_generation, ok := rm.get_registered_mice_handles(app_state.mice_handles_buf[:], &app_state.mice_handles_buf_len)
 
-	fmt.println("mice handles:", app_state.mice_handles_buf[:app_state.mice_handles_buf_len - 1])
-	return true
+	if !ok do return false
+
+	if new_generation != player_mouse.last_mouse_generation {
+		player_mouse.last_mouse_generation = new_generation
+		player_mouse.last_selected_mouse_idx = 0
+		// Clear handle so it gets reassigned
+		player_mouse.handle = nil
+	}
+
+	counter := 1
+	for counter <= app_state.mice_handles_buf_len {
+		next_idx := (player_mouse.last_selected_mouse_idx + counter) % app_state.mice_handles_buf_len
+		handle := app_state.mice_handles_buf[next_idx]
+
+		if handle != app_state.player_one_mouse.handle && handle != app_state.player_two_mouse.handle {
+			player_mouse.handle = handle
+			fmt.println("Assigned device with handle:", handle)
+			return true
+		}
+		counter += 1
+	}
+
+	return false
 }
 
 update_player_hand :: proc(hand_pos: ^Vec2, player_mouse: ^Mouse_State) {
@@ -283,13 +314,8 @@ rects_intersect :: proc(a: Rect, b: Rect) -> bool {
 }
 
 update_mouse_one_shot_events :: proc(mouse_state: ^Mouse_State) {
-	mouse_state.button_pressed[.LEFT] = false
-	mouse_state.button_pressed[.RIGHT] = false
-	mouse_state.button_pressed[.MIDDLE] = false
-
-	mouse_state.button_released[.LEFT] = false
-	mouse_state.button_released[.RIGHT] = false
-	mouse_state.button_released[.MIDDLE] = false
+	mouse_state.button_pressed = {}
+	mouse_state.button_released = {}
 }
 
 // Runs Windows message pump. The DispatchMessageW call will run `wnd_proc` if
@@ -457,8 +483,7 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 		switch wparam {
 		case GIDC_ARRIVAL:
 			dev_handle := win.HANDLE(uintptr(lparam))
-			if rm.add_raw_mouse(dev_handle) {
-				//Assign mouse to player, TODO: Allow player to choose via KB
+			if rm.register_raw_mouse(dev_handle) {
 				if app_state.player_one_mouse.handle == nil {
 					app_state.player_one_mouse = Mouse_State {
 						handle = dev_handle,
@@ -477,12 +502,13 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 			}
 		case GIDC_REMOVAL:
 			dev_handle := win.HANDLE(uintptr(lparam))
-			if rm.remove_raw_mouse(dev_handle) {
+			if rm.deregister_raw_mouse(dev_handle) {
 				if app_state.player_one_mouse.handle == dev_handle {
 					app_state.player_one_mouse = Mouse_State {
 						handle = nil,
 					}
 					fmt.println("Disconnected player one mouse")
+					use_next_mouse(&app_state.player_one_mouse)
 					break
 				}
 				if app_state.player_two_mouse.handle == dev_handle {
@@ -490,6 +516,7 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 						handle = nil,
 					}
 					fmt.println("Disconnected player two mouse")
+					use_next_mouse(&app_state.player_two_mouse)
 					break
 				}
 				fmt.println("Removed a device, but it didnt belong to any player: ", dev_handle)
@@ -501,12 +528,16 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 	case win.WM_KEYDOWN:
 		switch wparam {
 		case win.VK_R:
+			key_pressed[.R] = !key_down[.R]
 			key_down[.R] = true
 		case win.VK_ESCAPE:
+			key_pressed[.ESC] = !key_down[.ESC]
 			key_down[.ESC] = true
 		case win.VK_UP:
+			key_pressed[.UP] = !key_down[.UP]
 			key_down[.UP] = true
 		case win.VK_DOWN:
+			key_pressed[.DOWN] = !key_down[.DOWN]
 			key_down[.DOWN] = true
 		}
 		return 0
@@ -618,10 +649,10 @@ lock_cursor :: proc(hwnd: win.HWND) {
 	win.GetClientRect(hwnd, &rect)
 	win.MapWindowPoints(hwnd, nil, &rect, 2)
 	if !win.ClipCursor(&rect) {
-		fmt.eprintln("Could not lock cursor")
+		log.info("Could not lock cursor")
 	}
 	if win.ShowCursor(false) != -1 {
-		fmt.eprintln("Cursor could not be hidden, display count is not -1")
+		log.info("Cursor could not be hidden, display count is not -1")
 	}
 	app_state.cursor_shown = false
 }
@@ -630,10 +661,10 @@ unlock_cursor :: proc(hwnd: win.HWND) {
 	if app_state.cursor_shown do return
 
 	if !win.ClipCursor(nil) {
-		fmt.eprintln("Could not unlock cursor")
+		log.info("Could not unlock cursor")
 	}
 	if win.ShowCursor(true) != 0 {
-		fmt.eprintln("Cursor could not shown, display count is not 0")
+		log.info("Cursor could not shown, display count is not 0")
 	}
 	app_state.cursor_shown = true
 }
